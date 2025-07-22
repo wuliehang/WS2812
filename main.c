@@ -5,7 +5,7 @@
 #include "pwm.h"
 #include "ws2812.h"
 #include "stmflash.h" 
-
+#include <string.h>
 #define GROUP_COUNT_MAX         15
 #define ADC_THRESHOLD_COUNT_MAX 10
 #define LED_COUNT               2100
@@ -36,162 +36,191 @@ static void SaveConfig(void)
 }
 
 
-
 static void ProcessSerialCommands(void)
 {
     if (!(USART_RX_STA & 0x8000)) return;
+
     uint16_t len = USART_RX_STA & 0x3FFF;
     if (len >= USART_REC_LEN) len = USART_REC_LEN - 1;
     USART_RX_BUF[len] = '\0';
 
+    // 1. 去掉字符串末尾的\r\n，方便命令精确匹配
+    char *p = (char *)USART_RX_BUF;
+    while (*p && *p != '\r' && *p != '\n') p++;
+    *p = '\0';
+
     int idx, r, g, b, val;
 
-    // 设置组数
-    if (sscanf((char*)USART_RX_BUF, "SETGROUPCOUNT %d", &val) == 1) {
+    // ================== 无参数命令 =======================
+    if (strcmp((char*)USART_RX_BUF, "HELP") == 0)
+    {
+        // 帮助命令
+        printf("\r\n命令列表 (用法: 发送命令字符串到串口)：\r\n");
+        printf("HELP                  - 显示命令列表\r\n");
+        printf("SHOWCFG               - 显示当前所有配置\r\n");
+        printf("SETGROUPCOUNT <n>     - 设置组数 (1~%d)\r\n", GROUP_COUNT_MAX);
+        printf("SETTHRESHCOUNT <n>    - 设置阈值数量 (1~%d)\r\n", ADC_THRESHOLD_COUNT_MAX);
+        printf("SETCOLOR <idx> <R> <G> <B>      - 设置指定组的基色 (组号, R, G, B)\r\n");
+        printf("SETTHRESH <idx> <val>           - 设置指定编号的ADC阈值\r\n");
+        printf("SETTCOLOR <idx> <R> <G> <B>     - 设置指定阈值的颜色\r\n");
+        printf("ADDGROUP <R> <G> <B>            - 添加新组并指定基色\r\n");
+        printf("DELGROUP <idx>                  - 删除指定组\r\n");
+        printf("ADDTHRESH <val> <R> <G> <B>     - 添加新阈值及其颜色\r\n");
+        printf("DELTHRESH <idx>                 - 删除指定阈值\r\n");
+        printf("\r\n说明：组号/阈值编号从0开始计数。\r\n");
+    }
+    else if (strcmp((char*)USART_RX_BUF, "SHOWCFG") == 0)
+    {
+        // 显示配置命令
+        printf("\r\n------ 当前配置 ------\r\n");
+        printf("实际组数 groupCount=%d，实际阈值数 thresholdCount=%d\r\n", appConfig.groupCount, appConfig.thresholdCount);
+        printf("各组基色:\r\n");
+        for (int i = 0; i < appConfig.groupCount; i++) 
+        {
+            printf("  G%d: R=%d G=%d B=%d\r\n", i,
+                appConfig.baseColors[i][0],
+                appConfig.baseColors[i][1],
+                appConfig.baseColors[i][2]);
+        }
+        printf("\r\n各ADC阈值及颜色:\r\n");
+        for (int i = 0; i < appConfig.thresholdCount; i++) 
+        {
+            printf("  T%d: Threshold=%d, Color=R%d G%d B%d\r\n", i,
+                appConfig.adcThresholds[i],
+                appConfig.thresholdColors[i][0],
+                appConfig.thresholdColors[i][1],
+                appConfig.thresholdColors[i][2]);
+        }
+        printf("---------------------\r\n");
+    }
+
+    // ================== 带参数命令 =======================
+    else if (sscanf((char*)USART_RX_BUF, "SETGROUPCOUNT %d", &val) == 1)
+    {
         if (val >= 1 && val <= GROUP_COUNT_MAX) {
             appConfig.groupCount = val;
             SaveConfig();
-            printf("\r\nGroup count set to %d\r\n", val);
+            printf("\r\n已设置组数为 %d\r\n", val);
         } else {
-            printf("\r\nGroup count range: 1~%d\r\n", GROUP_COUNT_MAX);
+            printf("\r\n组数范围: 1~%d\r\n", GROUP_COUNT_MAX);
         }
     }
-    // 设置阈值数
-    else if (sscanf((char*)USART_RX_BUF, "SETTHRESHCOUNT %d", &val) == 1) {
+    else if (sscanf((char*)USART_RX_BUF, "SETTHRESHCOUNT %d", &val) == 1)
+    {
         if (val >= 1 && val <= ADC_THRESHOLD_COUNT_MAX) {
             appConfig.thresholdCount = val;
             SaveConfig();
-            printf("\r\nThreshold count set to %d\r\n", val);
+            printf("\r\n已设置阈值数为 %d\r\n", val);
         } else {
-            printf("\r\nThreshold count range: 1~%d\r\n", ADC_THRESHOLD_COUNT_MAX);
+            printf("\r\n阈值数范围: 1~%d\r\n", ADC_THRESHOLD_COUNT_MAX);
         }
     }
-    // 设置组颜色
-    else if (sscanf((char*)USART_RX_BUF, "SETCOLOR %d %d %d %d", &idx, &r, &g, &b) == 4) {
+    else if (sscanf((char*)USART_RX_BUF, "SETCOLOR %d %d %d %d", &idx, &r, &g, &b) == 4)
+    {
         if (idx >= 0 && idx < appConfig.groupCount && r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
             appConfig.baseColors[idx][0] = r;
             appConfig.baseColors[idx][1] = g;
             appConfig.baseColors[idx][2] = b;
             SaveConfig();
-            printf("\r\nGroup %d -> R=%d G=%d B=%d\r\n", idx, r, g, b);
-        } else
-            printf("\r\nErr: group 0~%d, RGB 0~255\r\n", appConfig.groupCount - 1);
+            printf("\r\n组 %d 颜色设置为: R=%d G=%d B=%d\r\n", idx, r, g, b);
+        } else {
+            printf("\r\n参数错误：组 0~%d，RGB 0~255\r\n", appConfig.groupCount - 1);
+        }
     }
-    // 设置ADC阈值
-    else if (sscanf((char*)USART_RX_BUF, "SETTHRESH %d %d", &idx, &val) == 2) {
+    else if (sscanf((char*)USART_RX_BUF, "SETTHRESH %d %d", &idx, &val) == 2)
+    {
         if (idx >= 0 && idx < appConfig.thresholdCount) {
             appConfig.adcThresholds[idx] = (uint16_t)val;
             SaveConfig();
-            printf("\r\nThreshold %d set to %d\r\n", idx, val);
-        } else
-            printf("\r\nIdx 0~%d\r\n", appConfig.thresholdCount - 1);
+            printf("\r\n阈值 %d 设置为 %d\r\n", idx, val);
+        } else {
+            printf("\r\n编号范围 0~%d\r\n", appConfig.thresholdCount - 1);
+        }
     }
-    // 设置阈值颜色
-    else if (sscanf((char*)USART_RX_BUF, "SETTCOLOR %d %d %d %d", &idx, &r, &g, &b) == 4) {
+    else if (sscanf((char*)USART_RX_BUF, "SETTCOLOR %d %d %d %d", &idx, &r, &g, &b) == 4)
+    {
         if (idx >= 0 && idx < appConfig.thresholdCount && r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
             appConfig.thresholdColors[idx][0] = r;
             appConfig.thresholdColors[idx][1] = g;
             appConfig.thresholdColors[idx][2] = b;
             SaveConfig();
-            printf("\r\nTColor %d -> R=%d G=%d B=%d\r\n", idx, r, g, b);
-        } else
-            printf("\r\nUsage: SETTCOLOR 0~%d R G B\r\n", appConfig.thresholdCount - 1);
+            printf("\r\n阈值 %d 颜色设置为: R=%d G=%d B=%d\r\n", idx, r, g, b);
+        } else {
+            printf("\r\n用法: SETTCOLOR 0~%d R G B\r\n", appConfig.thresholdCount - 1);
+        }
     }
-		
-		else if (sscanf((char*)USART_RX_BUF, "DELGROUP %d", &idx) == 1)
-{
-    if (idx >= 0 && idx < appConfig.groupCount)
+    else if (sscanf((char*)USART_RX_BUF, "DELGROUP %d", &idx) == 1)
     {
-        // 后面的往前搬
-        for (int i = idx; i < appConfig.groupCount - 1; i++)
-            for (int k = 0; k < 3; k++)
-                appConfig.baseColors[i][k] = appConfig.baseColors[i+1][k];
-        appConfig.groupCount--;
-        SaveConfig();
-        printf("\r\nDeleted Group %d, Now groupCount=%d\r\n", idx, appConfig.groupCount);
-    }
-    else
-        printf("\r\nGroup index 0~%d\r\n", appConfig.groupCount-1);
-}
-
-else if (sscanf((char*)USART_RX_BUF, "DELTHRESH %d", &idx) == 1)
-{
-    if (idx >= 0 && idx < appConfig.thresholdCount)
-    {
-        // 阈值和颜色全部往前搬
-        for (int i = idx; i < appConfig.thresholdCount - 1; i++)
+        if (idx >= 0 && idx < appConfig.groupCount)
         {
-            appConfig.adcThresholds[i] = appConfig.adcThresholds[i+1];
-            for (int k = 0; k < 3; k++)
-                appConfig.thresholdColors[i][k] = appConfig.thresholdColors[i+1][k];
+            for (int i = idx; i < appConfig.groupCount - 1; i++)
+                for (int k = 0; k < 3; k++)
+                    appConfig.baseColors[i][k] = appConfig.baseColors[i+1][k];
+            appConfig.groupCount--;
+            SaveConfig();
+            printf("\r\n已删除组 %d, 当前组数=%d\r\n", idx, appConfig.groupCount);
         }
-        appConfig.thresholdCount--;
-        SaveConfig();
-        printf("\r\nDeleted Threshold %d, Now thresholdCount=%d\r\n", idx, appConfig.thresholdCount);
+        else
+            printf("\r\n组编号范围 0~%d\r\n", appConfig.groupCount-1);
     }
-    else
-        printf("\r\nThreshold index 0~%d\r\n", appConfig.thresholdCount-1);
-}
-else if (sscanf((char*)USART_RX_BUF, "ADDGROUP %d %d %d", &r, &g, &b) == 3)
-{
-    if (appConfig.groupCount < GROUP_COUNT_MAX)
+    else if (sscanf((char*)USART_RX_BUF, "DELTHRESH %d", &idx) == 1)
     {
-        appConfig.baseColors[appConfig.groupCount][0] = r;
-        appConfig.baseColors[appConfig.groupCount][1] = g;
-        appConfig.baseColors[appConfig.groupCount][2] = b;
-        appConfig.groupCount++;
-        SaveConfig();
-        printf("\r\nAdded Group %d: R=%d G=%d B=%d\r\n", appConfig.groupCount-1, r, g, b);
+        if (idx >= 0 && idx < appConfig.thresholdCount)
+        {
+            for (int i = idx; i < appConfig.thresholdCount - 1; i++)
+            {
+                appConfig.adcThresholds[i] = appConfig.adcThresholds[i+1];
+                for (int k = 0; k < 3; k++)
+                    appConfig.thresholdColors[i][k] = appConfig.thresholdColors[i+1][k];
+            }
+            appConfig.thresholdCount--;
+            SaveConfig();
+            printf("\r\n已删除阈值 %d, 当前阈值数=%d\r\n", idx, appConfig.thresholdCount);
+        }
+        else
+            printf("\r\n阈值编号范围 0~%d\r\n", appConfig.thresholdCount-1);
     }
-    else
-        printf("\r\nGroup count already max=%d\r\n", GROUP_COUNT_MAX);
-}
-
-else if (sscanf((char*)USART_RX_BUF, "ADDTHRESH %d %d %d %d", &val, &r, &g, &b) == 4)
-{
-    if (appConfig.thresholdCount < ADC_THRESHOLD_COUNT_MAX)
+    else if (sscanf((char*)USART_RX_BUF, "ADDGROUP %d %d %d", &r, &g, &b) == 3)
     {
-        appConfig.adcThresholds[appConfig.thresholdCount] = val;
-        appConfig.thresholdColors[appConfig.thresholdCount][0] = r;
-        appConfig.thresholdColors[appConfig.thresholdCount][1] = g;
-        appConfig.thresholdColors[appConfig.thresholdCount][2] = b;
-        appConfig.thresholdCount++;
-        SaveConfig();
-        printf("\r\nAdded Threshold %d: Threshold=%d Color=R%d G%d B%d\r\n",
-            appConfig.thresholdCount-1, val, r, g, b);
+        if (appConfig.groupCount < GROUP_COUNT_MAX)
+        {
+            appConfig.baseColors[appConfig.groupCount][0] = r;
+            appConfig.baseColors[appConfig.groupCount][1] = g;
+            appConfig.baseColors[appConfig.groupCount][2] = b;
+            appConfig.groupCount++;
+            SaveConfig();
+            printf("\r\n已添加组 %d: R=%d G=%d B=%d\r\n", appConfig.groupCount-1, r, g, b);
+        }
+        else
+            printf("\r\n组数已达上限=%d\r\n", GROUP_COUNT_MAX);
     }
+    else if (sscanf((char*)USART_RX_BUF, "ADDTHRESH %d %d %d %d", &val, &r, &g, &b) == 4)
+    {
+        if (appConfig.thresholdCount < ADC_THRESHOLD_COUNT_MAX)
+        {
+            appConfig.adcThresholds[appConfig.thresholdCount] = val;
+            appConfig.thresholdColors[appConfig.thresholdCount][0] = r;
+            appConfig.thresholdColors[appConfig.thresholdCount][1] = g;
+            appConfig.thresholdColors[appConfig.thresholdCount][2] = b;
+            appConfig.thresholdCount++;
+            SaveConfig();
+            printf("\r\n已添加阈值 %d: 阈值=%d 颜色=R%d G%d B%d\r\n",
+                appConfig.thresholdCount-1, val, r, g, b);
+        }
+        else
+            printf("\r\n阈值数已达上限=%d\r\n", ADC_THRESHOLD_COUNT_MAX);
+    }
+    // ================== 其他未知命令 ======================
     else
-        printf("\r\nThreshold count already max=%d\r\n", ADC_THRESHOLD_COUNT_MAX);
-}
+    {
+        printf("\r\n未知命令，请发送 HELP 查看支持的命令列表。\r\n");
+    }
 
-		
-    // 查询配置
-    else if (sscanf((char*)USART_RX_BUF, "SHOWCFG") == 0) {
-        printf("\r\n------ Current Config ------\r\n");
-        printf("实际组数 groupCount=%d，实际阈值数 thresholdCount=%d\r\n", appConfig.groupCount, appConfig.thresholdCount);
-        printf("Breath Base Colors (Group):\r\n");
-        for (int i = 0; i < appConfig.groupCount; i++) {
-            printf("  G%d: R=%d G=%d B=%d\r\n", i,
-                   appConfig.baseColors[i][0],
-                   appConfig.baseColors[i][1],
-                   appConfig.baseColors[i][2]);
-        }
-        printf("\r\nADC Thresholds & Colors:\r\n");
-        for (int i = 0; i < appConfig.thresholdCount; i++) {
-            printf("  T%d: Threshold=%d, Color=R%d G%d B%d\r\n", i,
-                   appConfig.adcThresholds[i],
-                   appConfig.thresholdColors[i][0],
-                   appConfig.thresholdColors[i][1],
-                   appConfig.thresholdColors[i][2]);
-        }
-        printf("---------------------------\r\n");
-    }
-    else {
-        printf("\r\n命令列表:\r\n");
-        printf("SETGROUPCOUNT <n>\r\nSETTHRESHCOUNT <n>\r\nSETCOLOR <idx> <R> <G> <B>\r\nSETTHRESH <idx> <val>\r\nSETTCOLOR <idx> <R> <G> <B>\r\nSHOWCFG\r\n");
-    }
+    // 清空输入缓冲区
+    memset(USART_RX_BUF, 0, 10);
     USART_RX_STA = 0;
 }
+
 
 
 static void ShowConfig(void)
