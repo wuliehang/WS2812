@@ -8,25 +8,24 @@
 #include <string.h>
 #define GROUP_COUNT_MAX         15
 #define ADC_THRESHOLD_COUNT_MAX 10
-#define LED_COUNT               2100
+//#define LED_COUNT               2100
 #define BREATH_STEPS            50
 
 #define FLASH_SAVE_ADDR         ADDR_FLASH_SECTOR_11
 
-typedef struct __attribute__((packed)) {
+typedef struct __attribute__((packed)) 
+{
     uint8_t baseColors[GROUP_COUNT_MAX][3];
     uint16_t adcThresholds[ADC_THRESHOLD_COUNT_MAX];
     uint8_t thresholdColors[ADC_THRESHOLD_COUNT_MAX][3];
     uint8_t groupCount;             // 实际用多少组颜色
     uint8_t thresholdCount;         // 实际用多少个阈值
+		uint16_t breathDelayMs;         // 呼吸延时参数（单位ms）
+		uint16_t ledCount;                // 新增：LED数量
 } AppConfig_t;
 
 static AppConfig_t appConfig;
 
-// 呼吸状态
-int groupIndex = 0;
-uint8_t step = 0;
-int8_t dir = 1;
 
 // 保存整个配置到 Flash
 static void SaveConfig(void)
@@ -67,6 +66,8 @@ static void ProcessSerialCommands(void)
         printf("DELGROUP <idx>                  - 删除指定组\r\n");
         printf("ADDTHRESH <val> <R> <G> <B>     - 添加新阈值及其颜色\r\n");
         printf("DELTHRESH <idx>                 - 删除指定阈值\r\n");
+				printf("SETDELAY <ms>         - 设置呼吸灯延时时间（单位ms，0~1000）\r\n");
+				printf("SETLEDCOUNT <n>       - 设置LED灯珠数量 (1~2100)\r\n");
         printf("\r\n说明：组号/阈值编号从0开始计数。\r\n");
     }
     else if (strcmp((char*)USART_RX_BUF, "SHOWCFG") == 0)
@@ -91,6 +92,8 @@ static void ProcessSerialCommands(void)
                 appConfig.thresholdColors[i][1],
                 appConfig.thresholdColors[i][2]);
         }
+				printf("\r\n当前呼吸灯延时参数: %d ms\r\n", appConfig.breathDelayMs);
+				printf("\r\n当前LED数量: %d\r\n", appConfig.ledCount);
         printf("---------------------\r\n");
     }
 
@@ -117,7 +120,8 @@ static void ProcessSerialCommands(void)
     }
     else if (sscanf((char*)USART_RX_BUF, "SETCOLOR %d %d %d %d", &idx, &r, &g, &b) == 4)
     {
-        if (idx >= 0 && idx < appConfig.groupCount && r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+        if (idx >= 0 && idx < appConfig.groupCount && r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) 
+					{
             appConfig.baseColors[idx][0] = r;
             appConfig.baseColors[idx][1] = g;
             appConfig.baseColors[idx][2] = b;
@@ -210,6 +214,28 @@ static void ProcessSerialCommands(void)
         else
             printf("\r\n阈值数已达上限=%d\r\n", ADC_THRESHOLD_COUNT_MAX);
     }
+		
+		else if (sscanf((char*)USART_RX_BUF, "SETDELAY %d", &val) == 1)
+		{
+				if (val >= 0 && val <= 1000) { // 合理范围防呆
+						appConfig.breathDelayMs = val;
+						SaveConfig();
+						printf("\r\n已设置呼吸延时为 %d ms\r\n", val);
+				} else {
+						printf("\r\n呼吸延时设置范围: 0~1000 ms\r\n");
+				}
+		}
+		else if (sscanf((char*)USART_RX_BUF, "SETLEDCOUNT %d", &val) == 1)
+		{
+				if (val >= 1 && val <= 2100) { // 视你硬件能力设定最大支持
+						appConfig.ledCount = val;
+					ws2812_clear(appConfig.ledCount);
+						SaveConfig();
+						printf("\r\n已设置LED数量为 %d\r\n", val);
+				} else {
+						printf("\r\nLED数量设置范围: 1~2100\r\n");
+				}
+		}
     // ================== 其他未知命令 ======================
     else
     {
@@ -242,6 +268,8 @@ static void ShowConfig(void)
                    appConfig.thresholdColors[i][1],
                    appConfig.thresholdColors[i][2]);
         }
+								printf("\r\n当前呼吸灯延时参数: %d ms\r\n", appConfig.breathDelayMs);
+				printf("\r\n当前LED数量: %d\r\n", appConfig.ledCount);
         printf("---------------------------\r\n");
     
 }
@@ -271,6 +299,8 @@ static void LoadConfig(void)
             uint8_t colorPreset[5][3] = { {255,0,0}, {0,255,0}, {0,0,255}, {255,255,0}, {255,0,255} };
             for (int k = 0; k < 3; k++) appConfig.thresholdColors[i][k] = colorPreset[i][k];
         }
+				appConfig.ledCount = 2100;     // 默认2100
+				appConfig.breathDelayMs = 0; // 默认20ms呼吸灯延时
         appConfig.groupCount = GROUP_COUNT_MAX;
         appConfig.thresholdCount = ADC_THRESHOLD_COUNT_MAX;
         SaveConfig();
@@ -281,6 +311,8 @@ static void LoadConfig(void)
         appConfig.groupCount = GROUP_COUNT_MAX;
     if (appConfig.thresholdCount == 0 || appConfig.thresholdCount > ADC_THRESHOLD_COUNT_MAX)
         appConfig.thresholdCount = ADC_THRESHOLD_COUNT_MAX;
+		if (appConfig.ledCount == 0 || appConfig.ledCount > 3000)
+    appConfig.ledCount = 2100;
 }
 
 int main(void)
@@ -291,19 +323,22 @@ int main(void)
     uart_init(115200);
 
     LoadConfig();
-    ws2812_clear(LED_COUNT);
+    ws2812_clear(appConfig.ledCount);
+
+    ShowConfig();
 
     static int lastThresholdIdx = -2;
-    int groupIndex = 0;
-    uint8_t step = 0;
-    int8_t dir = 1;
-		ShowConfig();
+    static int groupIndex = 0;
+    static int step = 0;
+    static int dir = 1;
+    static int lastMode = -1;    // -1:未定义, 0:呼吸, 1:阈值
+
     while (1)
     {
         ProcessSerialCommands();
 
-        uint16_t adcValue = 300; // 你自己的ADC函数
-        uint8_t curColor[3];
+        uint16_t adcValue = 300; // TODO: 换成你的ADC采样值
+        uint8_t curColor[3] = {0};
         int found = 0;
         int curThresholdIdx = -1;
 
@@ -317,31 +352,52 @@ int main(void)
                 break;
             }
         }
+
+        // 检测是否切换模式
+        int curMode = found ? 1 : 0;    // 1:阈值, 0:呼吸
+        if (curMode != lastMode) {
+            if (curMode == 0) {  // 切回呼吸灯
+                step = 0;
+                dir = 1;
+                // groupIndex 可保留原值，也可重置，看你的需求
+            }
+            lastMode = curMode;
+        }
+
+        // 生成显示色
         if (!found) {
-            // 只用实际组数
             curColor[0] = (appConfig.baseColors[groupIndex][0] * step) / BREATH_STEPS;
             curColor[1] = (appConfig.baseColors[groupIndex][1] * step) / BREATH_STEPS;
             curColor[2] = (appConfig.baseColors[groupIndex][2] * step) / BREATH_STEPS;
         }
 
-        for (uint16_t i = 1; i <= LED_COUNT; i++)
+        for (uint16_t i = 1; i <= appConfig.ledCount; i++)
             ws2812_setPixelColor(curColor, i);
-        ws2812_show(LED_COUNT);
+        ws2812_show(appConfig.ledCount);
 
         if (!found) {
             step += dir;
-            if (step == BREATH_STEPS || step == 0) {
-                dir = -dir;
-                if (step == 0) {
-                    groupIndex = (groupIndex + 1) % appConfig.groupCount; // 只用实际组数
-                }
+            if (step >= BREATH_STEPS) {
+                step = BREATH_STEPS;
+                dir = -1;
+            } else if (step <= 0) {
+                step = 0;
+                dir = 1;
+                groupIndex++;
+                if (groupIndex >= appConfig.groupCount)
+                    groupIndex = 0;
+                // 每切换到下一组，呼吸重新从最暗渐亮
+                step = 0;
+                dir = 1;
             }
+            delay_ms(appConfig.breathDelayMs);  // 呼吸灯刷新速率（自行调节）
         } else {
             step = BREATH_STEPS;
             dir = 1;
+//            delay_ms(60);  // 固定灯显示时刷新速率（自行调节）
         }
 
-        // 只打印切换一次
+        // 只在阈值变化/模式变化时打印一次
         if (curThresholdIdx != lastThresholdIdx) {
             if (curThresholdIdx >= 0)
                 printf("当前处于第%d个阈值: 阈值=%d, ADC=%d\r\n", curThresholdIdx, appConfig.adcThresholds[curThresholdIdx], adcValue);
@@ -351,216 +407,3 @@ int main(void)
         }
     }
 }
-
-
-//int main(void)
-//{
-//    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
-//    delay_init(168);
-//    ws2812_init();
-//    uart_init(115200);
-
-//    LoadConfig();
-//    ws2812_clear(LED_COUNT);
-//		ShowConfig();
-//    while (1)
-//    {
-//        ProcessSerialCommands();
-//	 int curThresholdIdx = -1; // 当前处于哪个阈值，-1代表呼吸灯
-
-//        uint16_t adcValue = 2000; // 你自己写的ADC采集函数
-//        uint8_t curColor[3];
-//        int found = 0;
-
-//        // 优先级从高到低判断
-//        for (int i = ADC_THRESHOLD_COUNT - 1; i >= 0; --i) {
-//            if (adcValue >= appConfig.adcThresholds[i]) {
-//                for(int k=0;k<3;k++)
-//                    curColor[k] = appConfig.thresholdColors[i][k];
-//                found = 1;
-//							 curThresholdIdx = i; // 记录命中第几个阈值
-//                break;
-//            }
-//        }
-//        if (!found) {
-//            // 呼吸模式
-//            curColor[0] = (appConfig.baseColors[groupIndex][0] * step) / BREATH_STEPS;
-//            curColor[1] = (appConfig.baseColors[groupIndex][1] * step) / BREATH_STEPS;
-//            curColor[2] = (appConfig.baseColors[groupIndex][2] * step) / BREATH_STEPS;
-//        }
-
-//        for (uint16_t i = 1; i <= LED_COUNT; i++)
-//            ws2812_setPixelColor(curColor, i);
-//        ws2812_show(LED_COUNT);
-
-//        // 呼吸灯 step 只在呼吸模式下变动
-//        if (!found) {
-//            step += dir;
-//            if (step == BREATH_STEPS || step == 0) {
-//                dir = -dir;
-//                if (step == 0) {
-//                    groupIndex = (groupIndex + 1) % GROUP_COUNT;
-//                }
-//            }
-//        } else {
-//            // 非呼吸色，step固定为最大亮
-//            step = BREATH_STEPS;
-//            dir = 1;
-//        }
-//				
-////				     // 打印当前处于哪个阈值
-////        if (curThresholdIdx >= 0)
-////            printf("当前处于第%d个阈值（索引从0）: 阈值=%d, ADC=%d\r\n", curThresholdIdx, appConfig.adcThresholds[curThresholdIdx], adcValue);
-////        else
-////            printf("当前为呼吸灯模式, ADC=%d\r\n", adcValue);
-////				
-////				delay_ms(800);
-//    }
-//}
-
-
-
-
-//// Flash 存储起始地址，任选一个空闲扇区
-//#define FLASH_SAVE_ADDR   ADDR_FLASH_SECTOR_11
-//#define GROUP_COUNT   10      // 最多支持 10 组颜色
-
-
-//// 内存中保存的多组基色 (R,G,B)
-//static uint8_t baseColors[GROUP_COUNT][3];
-
-//// 启动时从 Flash 载入所有组
-//static void LoadColors(void)
-//{
-//	u32 tmp[GROUP_COUNT];
-//	STMFLASH_Read(FLASH_SAVE_ADDR, tmp, GROUP_COUNT);
-//	for (int g = 0; g < GROUP_COUNT; g++) 
-//	{
-//		if (tmp[g] == 0xFFFFFFFF) 
-//		{
-//			// Flash 默认是全 1，表示未写过，使用白色
-//			baseColors[g][0] = 150;
-//			baseColors[g][1] = 150;
-//			baseColors[g][2] = 150;
-//		} 
-//		else 
-//		{
-//			baseColors[g][0] = (tmp[g] >> 16) & 0xFF;
-//			baseColors[g][1] = (tmp[g] >>  8) & 0xFF;
-//			baseColors[g][2] = (tmp[g]      ) & 0xFF;
-//		}
-//	}
-//}
-
-//// 将内存中所有组一次性写回 Flash（重写全部 GROUP_COUNT 个 word）
-//static void SaveColors(void)
-//{
-//	u32 tmp[GROUP_COUNT];
-//	for (int g = 0; g < GROUP_COUNT; g++) 
-//	{
-//		tmp[g] = (baseColors[g][0] << 16)| (baseColors[g][1] <<  8) | baseColors[g][2];
-//	}
-//	STMFLASH_Write(FLASH_SAVE_ADDR, tmp, GROUP_COUNT);
-//}
-
-
-///*—— 串口命令处理（被 main 循环调用） ——*/
-//static void ProcessSerialCommands(void)
-//{
-//	if (USART_RX_STA & 0x8000) 
-//	{
-//			uint16_t len = USART_RX_STA & 0x3FFF;
-//			// 在尾部加 '\0'
-//			if (len >= USART_REC_LEN) len = USART_REC_LEN-1;
-//			USART_RX_BUF[len] = '\0';
-
-//			// 解析命令
-//			int group, r, g, b;
-//			if (sscanf((char*)USART_RX_BUF, "SETCOLOR %d %d %d %d", &group, &r, &g, &b) == 4)
-//			{
-//				if (group>=0 && group<GROUP_COUNT
-//				 && r>=0 && r<=255
-//				 && g>=0 && g<=255
-//				 && b>=0 && b<=255)
-//				{
-//					baseColors[group][0] = (uint8_t)r;
-//					baseColors[group][1] = (uint8_t)g;
-//					baseColors[group][2] = (uint8_t)b;
-//					SaveColors();
-//					printf("\r\nGroup %d -> R=%d G=%d B=%d\r\n",group, r, g, b);
-//				} 
-//				else 
-//				{
-//					printf("\r\nErr: group 0~%d, RGB 0~255\r\n",	GROUP_COUNT-1);
-//				}
-//			} 
-//			else 
-//			{
-//				printf("\r\nUsage: SETCOLOR <group> <R> <G> <B>\r\n");
-//			}
-//			USART_RX_STA = 0;
-//	}
-//}
-
-//// 颜色表 (R, G, B)
-//const uint8_t colorTable[][3] = {
-//    {255,   0,   0},  // 红
-//    {  0, 255,   0},  // 绿
-//    {  0,   0, 255},  // 蓝
-//    {255, 255,   0},  // 黄
-//    {255,   0, 255},  // 紫
-//    {  0, 255, 255},  // 青
-//};
-//#define COLOR_COUNT  (sizeof(colorTable)/sizeof(colorTable[0]))
-//#define LED_COUNT    2100
-//#define BREATH_STEPS   50    // 呼吸级数
-//int groupIndex = 0,j;
-
-//uint8_t step     = 0;     // 当前级数 [0..BREATH_STEPS]
-//int8_t dir       = 1;     // 1=变亮, -1=变暗
-//uint8_t colorIdx = 0;
-
-//// 工作缓冲：一颗灯的颜色
-//uint8_t rgb[3];
-
-//int main(void)
-//{
-//	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
-//	delay_init(168);
-//	ws2812_init();
-//	uart_init(115200);
-//	printf("呼吸灯(21)启动，8级分辨率\n");
-//	LoadColors();
-//	printf("Loaded colors:\r\n");
-//	for(int i=0;i<GROUP_COUNT;i++)
-//	{
-//		printf(" G%d=%d,%d,%d\r\n",i, baseColors[i][0], baseColors[i][1], baseColors[i][2]);
-//	}
-//	ws2812_clear(LED_COUNT);
-//	
-//	while (1)
-//	{	
-//		ProcessSerialCommands();
-//		//		// —— 更新呼吸级数 —— 
-//		step += dir;
-//		if (step == BREATH_STEPS || step == 0) 
-//		{
-//			dir = -dir;                         // 翻转方向
-//			if (step == 0) 
-//			{
-//				groupIndex = (groupIndex + 1) % GROUP_COUNT;
-//				printf("切换到组 %d\r\n", groupIndex);
-//			}
-//		}
-
-//		// 计算渐变色
-//		rgb[0] = (baseColors[groupIndex][0] * step) / BREATH_STEPS;
-//		rgb[1] = (baseColors[groupIndex][1] * step) / BREATH_STEPS;
-//		rgb[2] = (baseColors[groupIndex][2] * step) / BREATH_STEPS;
-
-//		for (uint16_t i = 1; i <= LED_COUNT; i++)
-//		ws2812_setPixelColor(rgb, i);
-//		ws2812_show(LED_COUNT);
-//	}
-//}
-
